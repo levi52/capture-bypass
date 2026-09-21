@@ -157,6 +157,31 @@ fn install_fonts(ctx: &egui::Context) {
         .or_default()
         .insert(0, "plex_sans".to_owned());
 
+    // ── Chinese font fallback — Microsoft YaHei (system font on Windows) ────
+    // Loads msyh.ttc from C:\Windows\Fonts to provide CJK glyph coverage.
+    // If the font cannot be found, the app still works — Chinese text will
+    // render as missing-glyph boxes instead of crashing.
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_owned());
+    let msyh_path = std::path::PathBuf::from(&windir).join("Fonts").join("msyh.ttc");
+    if let Ok(msyh_data) = std::fs::read(&msyh_path) {
+        fonts.font_data.insert(
+            "msyh".to_owned(),
+            Arc::new(FontData::from_owned(msyh_data)),
+        );
+        // Add as fallback after IBM Plex Sans for proportional text
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push("msyh".to_owned());
+        // Also add to monospace as fallback for Chinese characters in mono contexts
+        fonts
+            .families
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .push("msyh".to_owned());
+    }
+
     ctx.set_fonts(fonts);
 }
 

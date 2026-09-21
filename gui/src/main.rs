@@ -5,6 +5,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod theme;
+mod i18n;
+
+use i18n::Language;
 
 use eframe::egui::{self, Color32, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -179,6 +182,8 @@ struct Config {
     process_rules: Vec<ProcessRule>,
     #[serde(default)]
     exclusions: Vec<String>,
+    #[serde(default)]
+    language: Language,
 }
 
 fn default_sort_col() -> u8 { 0 }
@@ -209,6 +214,7 @@ impl Default for Config {
             strip_on_launch: false,
             process_rules: Vec::new(),
             exclusions: Vec::new(),
+            language: Language::English,
         }
     }
 }
@@ -256,394 +262,71 @@ fn save_config(cfg: &Config) {
 // render_help_window() turns each sub_heading into a bold label + separator,
 // so no raw ━━━ dividers needed.
 
-const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
-    ("Overview", &[
-        ("What is Capture Bypass?",
-            "Capture Bypass removes the WDA_EXCLUDEFROMCAPTURE screen-capture \
-             protection from Windows application windows, letting OBS, the \
-             Snipping Tool, and any other screen-capture software record them \
-             normally.\n\
-             \n\
-             Typical use-cases: streaming or recording DRM video players, \
-             conference call windows, and any other app that explicitly hides \
-             itself from capture software."),
-        ("How does it work?",
-            "Windows provides SetWindowDisplayAffinity(), which lets a process \
-             protect its own windows from capture.  Because the API only works \
-             on a process's own windows, bypassing it requires running code \
-             INSIDE the target process.\n\
-             \n\
-             Capture Bypass does this via DLL injection:\n\
-             \n\
-             1. OpenProcess        — open a handle to the target process\n\
-             2. VirtualAllocEx     — allocate memory inside the target\n\
-             3. WriteProcessMemory — write the payload DLL path into that memory\n\
-             4. CreateRemoteThread — start a thread inside the target that calls\n\
-                                     LoadLibraryA, loading the payload DLL\n\
-             5. The DLL's DllMain  — calls SetWindowDisplayAffinity(hwnd, WDA_NONE)\n\
-                                     for every window owned by that process"),
-        ("Legal notice",
-            "Only use this tool on windows and processes you own or have \
-             explicit permission to capture.  See DISCLAIMER.md in the \
-             repository for the full legal disclaimer."),
-    ]),
-    ("Requirements & Build", &[
-        ("Requirements",
-            "• Windows 10 build 19041+  (WDA_EXCLUDEFROMCAPTURE requires 2004+)\n\
-             • Administrator privileges  (OpenProcess on other processes requires admin)\n\
-             • Rust + Cargo  (https://rustup.rs)"),
-        ("Build — x64 (required)",
-            "cargo build --release -p payload_dll -p payload_dll_persistent -p gui\n\
-             \n\
-             Binaries land in:  target\\release\\"),
-        ("Build — x86 (optional, for 32-bit targets)",
-            "rustup target add i686-pc-windows-msvc\n\
-             cargo build --release --target i686-pc-windows-msvc \\\n\
-                   -p payload_dll -p payload_dll_persistent\n\
-             \n\
-             Binaries land in:  target\\i686-pc-windows-msvc\\release\\\n\
-             \n\
-             32-bit processes are shown with an orange \"32\" badge in the table."),
-    ]),
-    ("Usage Guide", &[
-        ("Window list",
-            "The table shows every visible, titled window with:\n\
-             \n\
-             PID      — Process ID\n\
-             Process  — Executable name  (orange \"32\" badge = 32-bit process)\n\
-             Title    — Window title\n\
-             Status   — Live protection state, refreshed every 500 ms\n\
-                          (or ~100 ms with Fast Scan enabled):\n\
-                          PROTECTED = WDA_EXCLUDEFROMCAPTURE\n\
-                          MONITOR   = WDA_MONITOR\n\
-                          OK        = WDA_NONE (capturable)\n\
-             Action   — \"Strip Protection\" button for that row"),
-        ("Header buttons",
-            "⟳ Refresh             Re-enumerate all windows immediately.\n\
-             \n\
-             ⚡ Strip All Protected Inject into every currently-protected PID at once.\n\
-                                    Each process is injected only once even if it owns\n\
-                                    multiple protected windows.\n\
-             \n\
-             Mode                  Toggle between One-shot and Persistent injection.\n\
-                                    One-shot is fast; Persistent fights re-protection.\n\
-             \n\
-             🔨 Stress Test        Launch stress_tester.exe — a self-protecting window\n\
-                                    with Fight Mode, Scenario A, and Scenario B.\n\
-             \n\
-             ⚙ Settings            Opens the full Settings panel.\n\
-             \n\
-             📋 Log                Toggle the injection history side-panel.\n\
-             \n\
-             📖 Help               Opens this window.\n\
-             \n\
-             🆕 vX.Y.Z available   Appears when a new release is detected on GitHub.\n\
-                                    Click it to open the update confirmation dialog.\n\
-                                    After you confirm, the installer downloads in the\n\
-                                    background (progress shown in the header).  When\n\
-                                    the download finishes the installer runs silently\n\
-                                    and the app restarts automatically — no second\n\
-                                    click required."),
-        ("Filter bar",
-            "Type to search live by window title, process name, or PID.  Click ✕ to clear.\n\
-             \n\
-             \"Protected only\" checkbox hides all unprotected windows.\n\
-             \n\
-             Protected-window indicator (right side of filter bar):\n\
-               🔴 N protected — one or more windows currently have WDA protection.\n\
-               🟢 0 protected — no protected windows are visible right now.\n\
-             \n\
-             🤖 Auto-inject — background thread strips newly-protected windows \
-             automatically.  Continues running while the app is minimised to tray.\n\
-             \n\
-             👁 Watch mode — shows ALL windows including unprotected ones in the list \
-             so you can monitor a specific process before protection is applied."),
-        ("Status bar",
-            "The bottom bar shows, left to right:\n\
-             \n\
-             v{version}       — current app version (e.g. v3.5.9)\n\
-             {N} lifetime     — total injections performed across all sessions\n\
-             {N} windows      — visible windows currently enumerated\n\
-             {N} protected    — windows with WDA_EXCLUDEFROMCAPTURE right now\n\
-             {N} 32-bit       — 32-bit processes in the current list\n\
-             \n\
-             Below that: the most recent action message with a timestamp.  \
-             Green = success, red = error, gray = informational."),
-    ]),
-    ("Settings", &[
-        ("Opening Settings",
-            "Click ⚙ Settings in the header to open the Settings window.  \
-             All changes are saved to config.toml immediately."),
-        ("Silent startup",
-            "When enabled the main window is hidden on launch — the app starts \
-             directly in the system tray.  Re-open it by clicking the tray icon \
-             or right-clicking and choosing Open.\n\
-             \n\
-             Useful for streamers who want capture-bypass running in the \
-             background without an extra window appearing at startup."),
-        ("Strip on launch",
-            "When enabled the app automatically calls Strip All Protected on \
-             startup, once the initial window scan completes.  Any protected \
-             windows present at launch are stripped without any user action.\n\
-             \n\
-             Combine with Silent Startup for fully hands-off protection removal \
-             every time Windows boots."),
-        ("Fast scan",
-            "Increases the background window-scan interval from ~500 ms to \
-             ~100 ms.  Protected windows are detected and (if auto-inject is on) \
-             stripped up to 5× faster.\n\
-             \n\
-             Trade-off: slightly higher CPU usage.  Recommended for apps that \
-             apply protection very briefly or mid-render."),
-        ("Desktop notifications",
-            "Toggle Windows balloon-tip notifications for injection events.  \
-             When multiple windows are stripped within 400 ms they are grouped \
-             into a single \"Stripped N windows\" notification instead of \
-             producing a burst of individual toasts.\n\
-             \n\
-             Note: notifications are sent via Win32 Shell_NotifyIcon so they \
-             work correctly even when the app is running as Administrator."),
-        ("Global hotkey",
-            "Assign a keyboard shortcut to trigger Strip All Protected from \
-             anywhere — even when the capture-bypass window is not focused or \
-             is minimised to the tray.\n\
-             \n\
-             Click inside the hotkey field and press your desired key combo \
-             (e.g. Ctrl+Shift+S), then save.  Leave it blank to disable."),
-        ("Discord Rich Presence",
-            "When enabled, the app reports its current activity to Discord so \
-             your status shows that you are using capture-bypass.  The presence \
-             updates with the number of protected windows detected and the \
-             injection count.\n\
-             \n\
-             Disable this if you stream your Discord status and don't want \
-             capture-bypass mentioned publicly."),
-        ("Export / Import config",
-            "Export config — writes the current settings (all toggles, rules, \
-             exclusions, hotkey, etc.) to a capture_bypass_config.toml file \
-             you choose.  Use this to back up your configuration or move it \
-             to another machine.\n\
-             \n\
-             Import config — loads settings from a previously exported file, \
-             replacing the current configuration.  The app applies the imported \
-             settings immediately without restarting."),
-        ("Injection log file",
-            "Enable logging to write every injection attempt (timestamp, PID, \
-             process name, result) to a persistent log file alongside the \
-             executable.  Useful for debugging or keeping an audit trail."),
-        ("Windows Defender",
-            "If Windows Defender flags payload_dll.dll or \
-             payload_dll_persistent.dll as suspicious, this is a false \
-             positive caused by the DLL injection technique — not malware.\n\
-             \n\
-             To add an exclusion, open PowerShell as Administrator and run \
-             the two commands shown in the Windows Defender section of \
-             Settings.  Use the 📋 Copy commands button to copy them to \
-             your clipboard, then paste into PowerShell and press Enter.\n\
-             \n\
-             The commands are:\n\
-               Add-MpPreference -ExclusionPath '<install folder>'\n\
-               Add-MpPreference -ExclusionProcess 'capture_bypass_gui.exe'\n\
-             \n\
-             Safe to run multiple times — Defender ignores duplicate entries."),
-    ]),
-    ("Per-Process Rules & Exclusions", &[
-        ("Per-process rules",
-            "The Rules table in Settings lets you override the global injection \
-             mode for specific processes.\n\
-             \n\
-             Three modes are available per rule:\n\
-             \n\
-             Always One-shot   — always use the fast one-shot DLL for this\n\
-                                 process, regardless of the global Mode toggle.\n\
-             \n\
-             Always Persistent — always use the persistent (re-applying) DLL\n\
-                                 for this process.  Good for known fighters.\n\
-             \n\
-             Skip              — never inject into this process, even if auto-\n\
-                                 inject or Strip All Protected is triggered.\n\
-             \n\
-             Add a rule by typing the executable name (e.g. chrome.exe) into \
-             the rule input field, choosing a mode, and clicking Add.  \
-             Rules are matched case-insensitively against the process name."),
-        ("Exclusion list",
-            "Processes in the exclusion list are completely ignored by all \
-             injection operations — manual Strip, Strip All Protected, and \
-             auto-inject will all skip them.\n\
-             \n\
-             Add an entry by typing the executable name (e.g. SecurityAgent.exe) \
-             and clicking Add.  Remove entries with the ✕ button.\n\
-             \n\
-             Use this to prevent accidental injection into system processes, \
-             AV software, or any process you want left alone."),
-    ]),
-    ("Injection Modes", &[
-        ("⚡ One-shot mode (default)",
-            "The payload DLL strips WDA protection once and exits.  \
-             Fast and lightweight.\n\
-             \n\
-             Use when: the target app sets protection only once at startup \
-             and never re-applies it.  Also suitable for most browsers and \
-             standard media players."),
-        ("🔁 Persistent mode",
-            "The payload DLL stays alive inside the target process and uses \
-             two layers to keep protection cleared:\n\
-             \n\
-             1. IAT hook — patches SetWindowDisplayAffinity in the host \
-             module's Import Address Table so the call is intercepted at \
-             the source.  Every subsequent call via a static import lands in \
-             our detour, which forces WDA_NONE instantly with zero latency.\n\
-             \n\
-             2. Polling fallback — a background thread still calls \
-             SetWindowDisplayAffinity(WDA_NONE) every 5 s as a safety net for \
-             windows that were already protected at inject time and for apps \
-             that resolve the function dynamically via GetProcAddress.\n\
-             \n\
-             Use when: the target app calls SetWindowDisplayAffinity on a \
-             timer to fight back against one-shot injection (e.g. DRM video \
-             players, apps with anti-capture enforcement)."),
-        ("Re-injection & re-protection",
-            "Windows caches loaded DLLs by file path — if the same DLL path \
-             is already loaded in a process, LoadLibraryA silently no-ops.\n\
-             \n\
-             If a one-shot strip appears to succeed but the status badge \
-             returns to PROTECTED shortly after, the app is re-applying \
-             protection on a timer.  Switch to 🔁 Persistent mode — a popup \
-             will also appear automatically when re-protection is detected.\n\
-             \n\
-             Per-process rules let you pin specific executables to Persistent \
-             mode so you never have to switch manually for known fighters."),
-    ]),
-    ("Browser Injection", &[
-        ("Why browsers need special handling",
-            "Chrome, Edge, Firefox, Brave, Opera, Vivaldi, and Thorium use a \
-             multi-process architecture.  DRM-protected video is rendered in a \
-             separate child (renderer) process that owns its own windows.  \
-             Injecting only into the main PID won't strip the video window."),
-        ("What Capture Bypass does",
-            "When you click \"Strip Protection\" on a browser row, the app \
-             automatically:\n\
-             \n\
-             1. Injects the payload into the main (browser) PID\n\
-             2. Enumerates all child processes via CreateToolhelp32Snapshot\n\
-             3. Injects into every child PID as well\n\
-             \n\
-             Auto-inject also performs this recursive child-process scan when \
-             it detects a browser process has become protected."),
-        ("Tip",
-            "If a browser re-applies protection after navigating to a new \
-             video, click ⚡ Strip All Protected again, or enable \
-             🤖 Auto-inject so it's handled automatically.  For persistently \
-             fighting browsers, add a per-process rule pinned to Persistent mode."),
-    ]),
-    ("System Tray & Auto-inject", &[
-        ("System tray",
-            "Clicking the window's ✕ close button hides the app to the system \
-             tray instead of quitting — the icon remains in the notification area.\n\
-             \n\
-             Tray icon right-click menu:\n\
-               Open  — restore the main window\n\
-               Quit  — fully exit the application\n\
-             \n\
-             The tray icon changes colour based on the current state:\n\
-               Blue  — no protected windows detected\n\
-               Red   — one or more protected windows are currently detected\n\
-             \n\
-             The tooltip updates to show how many protected windows are present \
-             so you can monitor state without opening the app."),
-        ("Auto-inject",
-            "Enable the 🤖 Auto-inject toggle in the toolbar.\n\
-             \n\
-             A background thread watches for newly-protected windows using a \
-             system-wide WinEvent hook (EVENT_OBJECT_SHOW).  When the hook fires, \
-             the thread wakes immediately — typical detection latency is < 50 ms. \
-             The normal 500 ms (or 100 ms Fast Scan) poll interval acts as a \
-             safety net for edge cases the hook might miss.\n\
-             \n\
-             Per-process rules and the exclusion list are respected — processes \
-             set to Skip or in the exclusion list are never auto-injected.\n\
-             \n\
-             Designed for streamers: enable auto-inject, minimise to tray, and \
-             any app that tries to block capture is handled silently in the \
-             background.  Desktop notifications (if enabled) confirm each strip."),
-    ]),
-    ("Auto-Update", &[
-        ("How updates work",
-            "The app checks GitHub Releases for a newer version tag when it \
-             starts and periodically while running.\n\
-             \n\
-             When a new version is found:\n\
-             \n\
-             1. A \"🆕 vX.Y.Z available\" button appears in the header.\n\
-             2. Clicking it opens a confirmation dialog — no download starts \
-                until you explicitly confirm.\n\
-             3. After you click \"Update now\", the installer downloads in the \
-                background.  A progress indicator appears in the header.\n\
-             4. When the download finishes the installer runs silently (/SILENT)\n\
-                and the app restarts automatically.  You do not need to click\n\
-                anything else after confirming.\n\
-             \n\
-             The update replaces all app binaries (GUI, payload DLLs, stress \
-             tester) in one step.  Your config.toml is preserved."),
-        ("Update installs wrong / nothing happens",
-            "The installer is downloaded to a temp file next to the executable. \
-             If the download fails the status bar will show an error.  Check \
-             your internet connection and try again.\n\
-             \n\
-             The installer requires the same Administrator token the GUI is \
-             already running under, so UAC should not prompt again."),
-    ]),
-    ("Troubleshooting", &[
-        ("DLLs not found",
-            "The payload DLLs haven't been built yet.  Run:\n\
-             \n\
-             cargo build --release -p payload_dll -p payload_dll_persistent\n\
-             \n\
-             (For 32-bit support also build the i686 target — see Requirements & Build.)"),
-        ("\"Strip failed\" / access denied",
-            "OpenProcess requires elevated privileges for processes not owned \
-             by your session.  Make sure capture_bypass_gui.exe is running as \
-             Administrator (the UAC prompt appears on launch)."),
-        ("Injection succeeds but window is still black in OBS",
-            "1. Wait for the next scan refresh — if the status badge shows OK, \
-             OBS may need its capture source refreshed (remove and re-add it).\n\
-             2. For browsers, click Strip Protection again — it re-injects \
-             child processes too.\n\
-             3. If the badge keeps flipping back to PROTECTED, the app is \
-             fighting back on a timer.  Switch to 🔁 Persistent mode, or add \
-             a per-process rule for that executable."),
-        ("Notifications don't appear",
-            "Windows balloon tips are suppressed by Focus Assist / Do Not \
-             Disturb.  Check Action Center settings and ensure \"Alarms only\" \
-             mode is not active.\n\
-             \n\
-             capture-bypass sends notifications via Win32 Shell_NotifyIcon \
-             (not WinRT toast), so they work correctly from an Administrator \
-             process — but OS-level suppression still applies."),
-        ("Antivirus flags the DLL",
-            "DLL injection is used by both legitimate tools and malware, so \
-             heuristic scanners may flag the payload.  Inspect \
-             payload_dll/src/lib.rs — it only calls SetWindowDisplayAffinity.\n\
-             \n\
-             Add an exclusion for the target\\ directory in your AV settings.  \
-             You can also use the per-process exclusion list to make the GUI \
-             itself ignore specific processes the AV is watching."),
-        ("x86 injection fails even with x86 binaries present",
-            "A 64-bit process cannot inject into a 32-bit process and \
-             vice-versa.  Verify you built the x86 target:\n\
-             \n\
-             rustup target add i686-pc-windows-msvc\n\
-             cargo build --release --target i686-pc-windows-msvc -p payload_dll\n\
-             \n\
-             32-bit processes are shown with an orange \"32\" badge.  If the \
-             badge is orange and injection fails, the x86 DLL is likely missing."),
-        ("Config file location",
-            "The config is stored as config.toml in the same directory as \
-             capture_bypass_gui.exe.  If settings don't save, check that the \
-             directory is writable.  You can also use Export config in Settings \
-             to save a copy to any location."),
-    ]),
-];
+fn help_sections(lang: Language) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    let h = i18n::help_heading(lang);
+    let b = i18n::help_body(lang);
+    vec![
+        (i18n::help_tab(lang).overview, vec![
+            (h.what_is, b.what_is),
+            (h.how_does_it_work, b.how_does_it_work),
+            (h.legal_notice, b.legal_notice),
+        ]),
+        (i18n::help_tab(lang).requirements_build, vec![
+            (h.requirements, b.requirements),
+            (h.build_x64, b.build_x64),
+            (h.build_x86, b.build_x86),
+        ]),
+        (i18n::help_tab(lang).usage_guide, vec![
+            (h.window_list, b.window_list),
+            (h.header_buttons, b.header_buttons),
+            (h.filter_bar, b.filter_bar),
+            (h.status_bar, b.status_bar),
+        ]),
+        (i18n::help_tab(lang).settings, vec![
+            (h.opening_settings, b.opening_settings),
+            (h.silent_startup, b.silent_startup),
+            (h.strip_on_launch, b.strip_on_launch),
+            (h.fast_scan, b.fast_scan),
+            (h.desktop_notifications, b.desktop_notifications),
+            (h.global_hotkey, b.global_hotkey),
+            (h.discord_rich_presence, b.discord_rich_presence),
+            (h.export_import, b.export_import),
+            (h.injection_log_file, b.injection_log_file),
+            (h.windows_defender, b.windows_defender),
+        ]),
+        (i18n::help_tab(lang).per_process_rules, vec![
+            (h.per_process_rules, b.per_process_rules),
+            (h.exclusion_list, b.exclusion_list),
+        ]),
+        (i18n::help_tab(lang).injection_modes, vec![
+            (h.one_shot_mode, b.one_shot_mode),
+            (h.persistent_mode, b.persistent_mode),
+            (h.re_injection, b.re_injection),
+        ]),
+        (i18n::help_tab(lang).browser_injection, vec![
+            (h.why_browsers, b.why_browsers),
+            (h.what_cb_does, b.what_cb_does),
+            (h.tip, b.tip),
+        ]),
+        (i18n::help_tab(lang).system_tray, vec![
+            (h.system_tray, b.system_tray),
+            (h.auto_inject, b.auto_inject),
+        ]),
+        (i18n::help_tab(lang).auto_update, vec![
+            (h.how_updates_work, b.how_updates_work),
+            (h.update_wrong, b.update_wrong),
+        ]),
+        (i18n::help_tab(lang).troubleshooting, vec![
+            (h.dlls_not_found, b.dlls_not_found),
+            (h.strip_failed, b.strip_failed),
+            (h.injection_ok_but_black, b.injection_ok_but_black),
+            (h.notifications_missing, b.notifications_missing),
+            (h.antivirus_flags, b.antivirus_flags),
+            (h.x86_fails, b.x86_fails),
+            (h.config_location, b.config_location),
+        ]),
+    ]
+}
 
 // Data model
 
@@ -859,6 +542,9 @@ struct App {
     exclusions: Vec<String>,
     exclusion_input: String,
     auto_inject_exclusions: Arc<Mutex<Vec<String>>>,
+
+    // Language
+    language: Language,
 }
 
 impl App {
@@ -920,7 +606,7 @@ impl App {
         }
 
         // Set up system tray
-        let (tray_icon, tray_open_id, tray_quit_id) = build_tray();
+        let (tray_icon, tray_open_id, tray_quit_id) = build_tray(cfg.language);
 
         // Tray event watcher thread
         // We cannot poll tray events inside update() because winit stops
@@ -1080,6 +766,7 @@ impl App {
             exclusions: cfg.exclusions.clone(),
             exclusion_input: String::new(),
             auto_inject_exclusions: auto_inject_exclusions_arc,
+            language: cfg.language,
         };
 
         // Restore auto-inject if it was running when the app last closed
@@ -1126,14 +813,15 @@ impl App {
     fn inject_pid_async(&self, pid: u32, process_name: String, is_32bit: bool) {
         let dll_path = self.dll_path(is_32bit);
         let tx = self.inject_tx.clone();
+        let lang = self.language;
         std::thread::spawn(move || {
+            let inj = i18n::inject(lang);
             if !dll_path.exists() {
                 let arch = if is_32bit { "x86" } else { "x64" };
                 let _ = tx.send(InjResult {
-                    msg: format!(
-                        "✗  DLL not found ({arch}): {}  — build with cargo build --release",
-                        dll_path.display()
-                    ),
+                    msg: inj.dll_not_found
+                        .replace("{arch}", arch)
+                        .replace("{path}", &dll_path.display().to_string()),
                     ok: false,
                 });
                 return;
@@ -1141,17 +829,18 @@ impl App {
             match injector_core::inject_fast(pid, &dll_path) {
                 Ok(()) => {
                     let _ = tx.send(InjResult {
-                        msg: format!(
-                            "✓  Stripped PID {pid} ({process_name})"
-                        ),
+                        msg: inj.stripped_pid
+                            .replace("{pid}", &pid.to_string())
+                            .replace("{name}", &process_name),
                         ok: true,
                     });
                 }
                 Err(e) => {
                     let _ = tx.send(InjResult {
-                        msg: format!(
-                            "✗  PID {pid} ({process_name}): {e}"
-                        ),
+                        msg: inj.pid_error
+                            .replace("{pid}", &pid.to_string())
+                            .replace("{name}", &process_name)
+                            .replace("{e}", &e.to_string()),
                         ok: false,
                     });
                 }
@@ -1170,7 +859,8 @@ impl App {
         if is_browser {
             for child_pid in get_child_pids(entry.pid) {
                 let is_32 = is_process_32bit(child_pid);
-                targets.push((child_pid, format!("{} (child)", entry.process_name), is_32));
+                let child_name = i18n::inject(self.language).child_suffix.replace("{name}", &entry.process_name);
+                targets.push((child_pid, child_name, is_32));
             }
         }
 
@@ -1194,7 +884,7 @@ impl App {
             // will show in status from the inject results; handled by caller
         }
         let _ = self.inject_tx.send(InjResult {
-            msg: format!("⚡ Stripping {count} protected process(es)…"),
+            msg: i18n::inject(self.language).stripping_n.replace("{count}", &count.to_string()),
             ok: true,
         });
     }
@@ -1292,6 +982,7 @@ impl App {
             strip_on_launch: self.strip_on_launch,
             process_rules: self.process_rules.clone(),
             exclusions: self.exclusions.clone(),
+            language: self.language,
         });
     }
 
@@ -1306,6 +997,7 @@ impl App {
         let fast_scan  = self.fast_scan;
         let rules      = Arc::clone(&self.auto_inject_rules);
         let exclusions = Arc::clone(&self.auto_inject_exclusions);
+        let lang       = self.language;
 
         std::thread::spawn(move || {
             // Per-PID state, entirely local to this thread — no Arc needed.
@@ -1413,8 +1105,9 @@ impl App {
                     let mut pids: Vec<(u32, String, bool)> =
                         vec![(w.pid, w.process_name.clone(), w.is_32bit)];
                     if BROWSER_NAMES.iter().any(|b| w.process_name.eq_ignore_ascii_case(b)) {
+                        let child_suffix = i18n::inject(lang).child_suffix.to_string();
                         for child in get_child_pids(w.pid) {
-                            pids.push((child, w.process_name.clone(),
+                            pids.push((child, child_suffix.replace("{name}", &w.process_name),
                                        is_process_32bit(child)));
                         }
                     }
@@ -1425,12 +1118,16 @@ impl App {
 
                         match injector_core::inject_fast(pid, &dll_path) {
                             Ok(()) => {
+                                let inj = i18n::inject(lang);
                                 let verb = if is_escalation {
-                                    "🔄 Escalated→persistent"
+                                    inj.escalated
                                 } else {
-                                    "🤖 Auto-stripped"
+                                    inj.auto_stripped
                                 };
-                                let msg = format!("{verb} {name} (PID {pid})");
+                                let msg = inj.verb_pid
+                                    .replace("{verb}", verb)
+                                    .replace("{name}", &name)
+                                    .replace("{pid}", &pid.to_string());
                                 let _ = tx.send(InjResult { msg, ok: true });
                                 state.insert(pid, (name, use_persistent_for_this, false,
                                                    std::time::Instant::now()));
@@ -1439,9 +1136,11 @@ impl App {
                             // OS-enforced block — nothing we can do in user-mode.
                             // Log once and give up on this PID.
                             Err(injector_core::InjectError::MitigationPolicy(reason)) => {
-                                let msg = format!(
-                                    "⛔ {name} (PID {pid}) blocked by OS policy: {reason}"
-                                );
+                                let inj = i18n::inject(lang);
+                                let msg = inj.blocked_by_os
+                                    .replace("{name}", &name)
+                                    .replace("{pid}", &pid.to_string())
+                                    .replace("{reason}", &reason);
                                 let _ = tx.send(InjResult { msg, ok: false });
                                 state.insert(pid, (name, false, true,
                                                    std::time::Instant::now()));
@@ -1451,7 +1150,11 @@ impl App {
                             // if we haven't already logged for this PID.
                             Err(e) => {
                                 if !state.contains_key(&pid) {
-                                    let msg = format!("⚠️ {name} (PID {pid}): {e}");
+                                    let inj = i18n::inject(lang);
+                                    let msg = inj.warning
+                                        .replace("{name}", &name)
+                                        .replace("{pid}", &pid.to_string())
+                                        .replace("{e}", &e.to_string());
                                     let _ = tx.send(InjResult { msg, ok: false });
                                 }
                             }
@@ -1482,6 +1185,7 @@ impl App {
 
         let running = Arc::clone(&self.discord_rpc_running);
         let strip_count = Arc::clone(&self.session_strip_count);
+        let lang = self.language;
 
         std::thread::Builder::new()
             .name("discord-rpc".into())
@@ -1492,15 +1196,17 @@ impl App {
                     return;
                 }
 
+                let d = i18n::discord(lang);
+
                 // Push the initial presence right away
                 let count = strip_count.load(Ordering::Relaxed);
                 let _ = client.set_activity(
                     activity::Activity::new()
                         .details("capture-bypass")
-                        .state(&format!("Strips this session: {count}"))
+                        .state(&d.strips_this_session.replace("{count}", &count.to_string()))
                         .buttons(vec![
                             activity::Button::new(
-                                "Get capture-bypass",
+                                d.get_capture_bypass,
                                 "https://github.com/Londopy/capture-bypass/releases/latest",
                             ),
                             activity::Button::new(
@@ -1514,8 +1220,8 @@ impl App {
                 while running.load(Ordering::Relaxed) {
                     match rx.recv_timeout(std::time::Duration::from_secs(5)) {
                         Ok(state) => {
-                            let mode_str = if state.persistent { "persistent" } else { "one-shot" };
-                            let auto_str = if state.auto_inject { "auto-inject on" } else { "manual" };
+                            let mode_str = if state.persistent { d.persistent } else { d.one_shot };
+                            let auto_str = if state.auto_inject { d.auto_inject_on } else { d.manual };
                             let status = format!("{auto_str} · {mode_str} · {strips} strips",
                                 strips = state.strip_count);
                             let _ = client.set_activity(
@@ -1524,7 +1230,7 @@ impl App {
                                     .state(&status)
                                     .buttons(vec![
                                         activity::Button::new(
-                                            "Get capture-bypass",
+                                            d.get_capture_bypass,
                                             "https://github.com/Londopy/capture-bypass/releases/latest",
                                         ),
                                         activity::Button::new(
@@ -1602,10 +1308,11 @@ impl eframe::App for App {
             if Instant::now() >= deadline {
                 if self.toast_enabled && !self.toast_pending.is_empty() {
                     let msgs = std::mem::take(&mut self.toast_pending);
+                    let toast = i18n::toast(self.language);
                     if msgs.len() == 1 {
-                        send_toast("capture-bypass", &msgs[0]);
+                        send_toast(toast.title, &msgs[0]);
                     } else {
-                        send_toast("capture-bypass", &format!("Stripped {} windows", msgs.len()));
+                        send_toast(toast.title, &toast.stripped_n_windows.replace("{n}", &msgs.len().to_string()));
                     }
                 } else {
                     self.toast_pending.clear();
@@ -1725,12 +1432,12 @@ impl eframe::App for App {
                         if let Some(icon) = make_tray_icon(255, 0, 0) {
                             let _ = tray.set_icon(Some(icon));
                         }
-                        let _ = tray.set_tooltip(Some("capture-bypass — protected windows detected!"));
+                        let _ = tray.set_tooltip(Some(i18n::tray(self.language).tooltip_protected));
                     } else {
                         if let Some(icon) = make_tray_icon(0x44, 0x88, 0xFF) {
                             let _ = tray.set_icon(Some(icon));
                         }
-                        let _ = tray.set_tooltip(Some("capture-bypass"));
+                        let _ = tray.set_tooltip(Some(i18n::tray(self.language).tooltip));
                     }
                 }
             }
@@ -1741,7 +1448,7 @@ impl eframe::App for App {
             self.strip_on_launch_pending = false;
             if all_windows.iter().any(|w| w.is_protected) {
                 self.strip_all_protected(&all_windows);
-                self.set_status("🚀 Launch strip: stripping all protected windows.".to_string(), true);
+                self.set_status(i18n::status_msg(self.language).launch_strip.to_string(), true);
             }
         }
 
@@ -1806,7 +1513,7 @@ impl eframe::App for App {
         });
 
         // Help window
-        render_help_window(ctx, &mut self.show_help, &mut self.help_section);
+        render_help_window(ctx, &mut self.show_help, &mut self.help_section, self.language);
 
         // Compute n_prot early (used in filter bar and status bar)
         let n_prot = all_windows.iter().filter(|w| w.is_protected).count();
@@ -1832,6 +1539,7 @@ impl eframe::App for App {
         render_settings_window(
             ctx,
             &mut self.show_settings,
+            self.language,
             self.startup_enabled,
             self.toast_enabled,
             self.hotkey_enabled,
@@ -1877,31 +1585,29 @@ impl eframe::App for App {
                 let tag = tag.clone();
                 let mut confirmed = false;
                 let mut cancelled = false;
-                egui::Window::new("Update available")
+                let u = i18n::update(self.language);
+                egui::Window::new(u.window_title)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .show(ctx, |ui| {
-                        ui.label(format!("Update to {}?", tag));
+                        ui.label(u.update_to.replace("{tag}", &tag));
                         ui.add_space(4.0);
                         ui.label(
-                            RichText::new(
-                                "The installer will run silently in the background.\n\
-                                 When it finishes the app will relaunch automatically."
-                            )
-                            .weak()
-                            .small(),
+                            RichText::new(u.installer_hint)
+                                .weak()
+                                .small(),
                         );
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             if ui.add(
-                                egui::Button::new("⬇ Update now")
-                                    .fill(Color32::from_rgb(20, 80, 30))
+                                egui::Button::new(RichText::new(u.update_now.to_string()).color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(34, 120, 50))
                             ).clicked() {
                                 confirmed = true;
                             }
                             ui.add_space(8.0);
-                            if ui.button("Later").clicked() {
+                            if ui.button(u.later).clicked() {
                                 cancelled = true;
                             }
                         });
@@ -1931,6 +1637,7 @@ impl eframe::App for App {
         let mut do_stress_test = false;
         let mut toggle_log = false;
         let mut toggle_update_confirm = false;
+        let mut toggle_language = false;
         let mut new_sort: Option<(SortCol, bool)> = None;
         let mut remove_watch: Option<usize> = None;
         let mut add_watch = false;
@@ -1943,10 +1650,20 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("capture-bypass").color(theme::TEXT).strong());
                 ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).monospace().size(11.0).color(theme::TEXT_FAINT));
-                ui.label(RichText::new("ADMIN").monospace().size(10.0).color(theme::ACCENT));
+                ui.label(RichText::new(i18n::header(self.language).admin).monospace().size(10.0).color(theme::ACCENT));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("📖 Help").clicked() {
+                    // Language toggle
+                    let lang_label = self.language.label();
+                    if ui.button(lang_label)
+                        .on_hover_text(if self.language == Language::English { "Switch to Chinese" } else { "切换到英文" })
+                        .clicked()
+                    {
+                        toggle_language = true;
+                    }
+                    ui.add_space(4.0);
+
+                    if ui.button(i18n::header(self.language).help).clicked() {
                         toggle_help = true;
                     }
                     ui.add_space(4.0);
@@ -1954,12 +1671,14 @@ impl eframe::App for App {
                     // Update header — click to open confirm dialog, then download, then restart.
                     if let Some(UpdateState::Available(tag)) = &self.update_state {
                         let tag = tag.clone();
+                        let h = i18n::header(self.language);
+                        let hh = i18n::header_hover(self.language);
                         let do_restart = match &self.download_state {
                             // Not yet downloading — show clickable "available" button
                             DownloadState::Idle => {
-                                if ui.add(egui::Button::new(format!("🆕 v{tag} available"))
-                                    .fill(Color32::from_rgb(80, 50, 10)))
-                                    .on_hover_text("Click to update")
+                                if ui.add(egui::Button::new(RichText::new(&h.update_available.replace("{tag}", &tag)).color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(120, 80, 20)))
+                                    .on_hover_text(hh.click_to_update)
                                     .clicked()
                                 {
                                     toggle_update_confirm = true;
@@ -1969,33 +1688,33 @@ impl eframe::App for App {
                             DownloadState::Downloading(pct) => {
                                 let pct = *pct;
                                 let label = if pct > 0.0 {
-                                    format!("⬇ {:.0}%", pct * 100.0)
+                                    h.downloading.replace("{pct}", &format!("{:.0}", pct * 100.0))
                                 } else {
                                     "⬇ …".to_string()
                                 };
                                 ui.add(egui::Button::new(label)
                                     .fill(Color32::from_rgb(25, 55, 15)))
-                                    .on_hover_text(format!("Downloading v{tag} in the background…"));
+                                    .on_hover_text(hh.downloading_bg.replace("{tag}", &tag));
                                 false
                             }
                             DownloadState::Verifying => {
-                                ui.add(egui::Button::new("🔍 …")
+                                ui.add(egui::Button::new(h.verifying)
                                     .fill(Color32::from_rgb(15, 45, 65)))
-                                    .on_hover_text("Verifying download…");
+                                    .on_hover_text(hh.verifying_download);
                                 false
                             }
                             // The one click the user ever needs
                             DownloadState::Ready(_) => {
-                                ui.add(egui::Button::new(format!("🔄 Restart to update"))
-                                    .fill(Color32::from_rgb(20, 80, 30)))
+                                ui.add(egui::Button::new(RichText::new(h.restart_to_update.to_string()).color(Color32::WHITE))
+                                    .fill(Color32::from_rgb(34, 120, 50)))
                                     .on_hover_text(
-                                        format!("v{tag} is ready — click to install and relaunch")
+                                        hh.ready_to_install.replace("{tag}", &tag)
                                     )
                                     .clicked()
                             }
                             DownloadState::Failed(e) => {
                                 let e = e.clone();
-                                if ui.add(egui::Button::new("✗ Retry update?")
+                                if ui.add(egui::Button::new(h.retry_update)
                                         .fill(Color32::from_rgb(80, 15, 15)))
                                     .on_hover_text(e)
                                     .clicked()
@@ -2050,8 +1769,8 @@ impl eframe::App for App {
                     }
 
                     // Settings
-                    if theme::ghost(ui, "Settings")
-                        .on_hover_text("Startup, notifications, hotkey")
+                    if theme::ghost(ui, i18n::header(self.language).settings)
+                        .on_hover_text(i18n::header_hover(self.language).settings_hint)
                         .clicked()
                     {
                         toggle_settings = true;
@@ -2060,8 +1779,8 @@ impl eframe::App for App {
 
                     // Log toggle
                     let log_on = self.show_log;
-                    if theme::toggle_button(ui, log_on, if log_on { "Log ON" } else { "Log" })
-                        .on_hover_text("Toggle the injection log panel")
+                    if theme::toggle_button(ui, log_on, if log_on { i18n::header(self.language).log_on } else { i18n::header(self.language).log_off })
+                        .on_hover_text(i18n::header_hover(self.language).log_hint)
                         .clicked()
                     {
                         toggle_log = true;
@@ -2069,31 +1788,28 @@ impl eframe::App for App {
                     ui.add_space(4.0);
 
                     if ui
-                        .button("Stress Test")
-                        .on_hover_text(
-                            "Launch stress_tester.exe — a self-protecting window.\n\
-                             Also tests Scenario A (process scan) and Scenario B\n\
-                             (module ejection) to verify stealth defences work.",
-                        )
+                        .button(i18n::header(self.language).stress_test)
+                        .on_hover_text(i18n::header_hover(self.language).stress_test_hint)
                         .clicked()
                     {
                         do_stress_test = true;
                     }
                     ui.add_space(4.0);
 
-                    let mode_label = if self.persistent_mode { "Persistent" } else { "One-shot" };
+                    let h = i18n::header(self.language);
+                    let mode_label = if self.persistent_mode { h.persistent } else { h.one_shot };
                     if theme::toggle_button(ui, self.persistent_mode, mode_label).clicked() {
                         toggle_mode = true;
                     }
-                    ui.label(theme::caption("Mode"));
+                    ui.label(theme::caption(h.mode));
                     ui.add_space(8.0);
 
-                    if theme::danger(ui, "Strip All Protected").clicked() {
+                    if theme::danger(ui, i18n::header(self.language).strip_all_protected).clicked() {
                         do_strip_all = true;
                     }
                     ui.add_space(4.0);
 
-                    if ui.button("⟳  Refresh").clicked() {
+                    if ui.button(i18n::header(self.language).refresh).clicked() {
                         manual_refresh = true;
                     }
                 });
@@ -2102,23 +1818,24 @@ impl eframe::App for App {
 
             // Filter bar + checkboxes
             ui.horizontal(|ui| {
-                ui.label("Filter:");
+                let f = i18n::filter(self.language);
+                ui.label(f.filter);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.filter)
                         .desired_width(220.0)
-                        .hint_text("process, title, or PID"),
+                        .hint_text(f.hint),
                 );
                 if ui.small_button("✕").clicked() {
                     self.filter.clear();
                 }
                 ui.add_space(12.0);
-                ui.checkbox(&mut self.protected_only, "Protected only");
+                ui.checkbox(&mut self.protected_only, f.protected_only);
                 ui.add_space(12.0);
 
                 let auto_label = if self.auto_inject_enabled {
-                    "Auto-inject ON"
+                    f.auto_inject_on
                 } else {
-                    "Auto-inject OFF"
+                    f.auto_inject_off
                 };
                 if theme::toggle_button(ui, self.auto_inject_enabled, auto_label).clicked() {
                     toggle_auto = true;
@@ -2126,21 +1843,22 @@ impl eframe::App for App {
 
                 ui.add_space(12.0);
                 if n_prot > 0 {
-                    ui.label(RichText::new(format!("● {} protected", n_prot)).monospace().color(theme::DANGER).strong());
+                    ui.label(RichText::new(f.n_protected.replace("{n}", &n_prot.to_string())).monospace().color(theme::DANGER).strong());
                 } else {
-                    ui.label(RichText::new("● 0 protected").monospace().color(theme::SUCCESS));
+                    ui.label(RichText::new(f.zero_protected).monospace().color(theme::SUCCESS));
                 }
             });
 
             // Watch mode row
             ui.horizontal(|ui| {
-                ui.label("Watch:");
+                let f = i18n::filter(self.language);
+                ui.label(f.watch);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.watch_input)
                         .desired_width(150.0)
                         .hint_text("process.exe"),
                 );
-                if ui.small_button("+ Add").clicked() {
+                if ui.small_button(f.add).clicked() {
                     add_watch = true;
                 }
                 ui.add_space(8.0);
@@ -2162,13 +1880,20 @@ impl eframe::App for App {
         });
 
         // Apply deferred actions
+        if toggle_language {
+            self.language = match self.language {
+                Language::English => Language::Chinese,
+                Language::Chinese => Language::English,
+            };
+            self.persist();
+        }
         if toggle_help {
             self.show_help = !self.show_help;
         }
         if toggle_mode {
             self.persistent_mode = !self.persistent_mode;
-            let mode = if self.persistent_mode { "Persistent" } else { "One-shot" };
-            self.set_status_neutral(format!("Mode: {mode}"));
+            let mode = if self.persistent_mode { i18n::status_msg(self.language).mode_persistent } else { i18n::status_msg(self.language).mode_one_shot };
+            self.set_status_neutral(mode);
             if self.persistent_mode {
                 self.one_shot_stripped.clear();
                 self.reapply_alert.clear();
@@ -2180,28 +1905,28 @@ impl eframe::App for App {
             self.auto_inject_enabled = !self.auto_inject_enabled;
             if self.auto_inject_enabled {
                 self.start_auto_inject();
-                self.set_status("🤖 Auto-inject active — minimize to tray.", true);
+                self.set_status(i18n::status_msg(self.language).auto_inject_active, true);
             } else {
                 self.stop_auto_inject();
-                self.set_status_neutral("Auto-inject disabled.");
+                self.set_status_neutral(i18n::status_msg(self.language).auto_inject_disabled);
             }
             self.persist();
             self.push_rpc_state();
         }
         if manual_refresh {
             // Background thread handles refresh; just show feedback
-            self.set_status_neutral("Refreshing…");
+            self.set_status_neutral(i18n::status_msg(self.language).refreshing);
         }
         if do_stress_test {
             let stress_path = self.exe_dir.join("stress_tester.exe");
             if stress_path.exists() {
                 match std::process::Command::new(&stress_path).spawn() {
-                    Ok(_) => self.set_status_neutral("Launched stress_tester.exe."),
-                    Err(e) => self.set_status(format!("✗ Could not launch stress_tester: {e}"), false),
+                    Ok(_) => self.set_status_neutral(i18n::status_msg(self.language).launched_stress_tester),
+                    Err(e) => self.set_status(i18n::status_msg(self.language).could_not_launch_stress_tester.replace("{e}", &e.to_string()), false),
                 }
             } else {
                 self.set_status(
-                    "✗ stress_tester.exe not found — build with: cargo build --release -p stress_tester",
+                    i18n::status_msg(self.language).stress_tester_not_found,
                     false,
                 );
             }
@@ -2221,15 +1946,15 @@ impl eframe::App for App {
             let desired = !self.startup_enabled;
             if write_startup_reg(desired) {
                 self.startup_enabled = desired;
-                let s = if desired { "🚀 Added to Windows startup." } else { "Removed from Windows startup." };
+                let s = if desired { i18n::status_msg(self.language).added_to_startup } else { i18n::status_msg(self.language).removed_from_startup };
                 self.set_status(s, desired);
             } else {
-                self.set_status("✗ Could not write startup registry key.", false);
+                self.set_status(i18n::status_msg(self.language).could_not_write_startup, false);
             }
         }
         if toggle_toast_from_settings {
             self.toast_enabled = !self.toast_enabled;
-            let s = if self.toast_enabled { "🔔 Toast notifications ON." } else { "🔕 Toast notifications OFF." };
+            let s = if self.toast_enabled { i18n::status_msg(self.language).toast_on } else { i18n::status_msg(self.language).toast_off };
             self.set_status_neutral(s);
             self.persist();
         }
@@ -2238,19 +1963,19 @@ impl eframe::App for App {
             if self.hotkey_enabled {
                 register_hotkey(self.hotkey_id, self.hotkey_mods, self.hotkey_key);
                 let combo = hotkey_display(self.hotkey_mods, self.hotkey_key);
-                self.set_status_neutral(format!("⌨ Hotkey registered: {combo}"));
+                self.set_status_neutral(i18n::status_msg(self.language).hotkey_registered.replace("{combo}", &combo));
             } else {
                 unregister_hotkey(self.hotkey_id);
-                self.set_status_neutral("⌨ Hotkey unregistered.");
+                self.set_status_neutral(i18n::status_msg(self.language).hotkey_unregistered);
             }
             self.persist();
         }
         if toggle_minimize_to_tray_from_settings {
             self.minimize_to_tray = !self.minimize_to_tray;
             let s = if self.minimize_to_tray {
-                "✕ closes to tray."
+                i18n::status_msg(self.language).closes_to_tray
             } else {
-                "✕ exits the app."
+                i18n::status_msg(self.language).exits_app
             };
             self.set_status_neutral(s);
             self.persist();
@@ -2258,9 +1983,9 @@ impl eframe::App for App {
         if toggle_logging_from_settings {
             self.logging_enabled = !self.logging_enabled;
             let s = if self.logging_enabled {
-                "📋 Injection log file ON."
+                i18n::status_msg(self.language).log_on
             } else {
-                "📋 Injection log file OFF."
+                i18n::status_msg(self.language).log_off
             };
             self.set_status_neutral(s);
             self.persist();
@@ -2281,10 +2006,10 @@ impl eframe::App for App {
             self.discord_rpc_enabled = !self.discord_rpc_enabled;
             if self.discord_rpc_enabled {
                 self.start_discord_rpc();
-                self.set_status_neutral("🎮 Discord Rich Presence ON.");
+                self.set_status_neutral(i18n::status_msg(self.language).discord_on);
             } else {
                 self.stop_discord_rpc();
-                self.set_status_neutral("🎮 Discord Rich Presence OFF.");
+                self.set_status_neutral(i18n::status_msg(self.language).discord_off);
             }
             self.persist();
         }
@@ -2297,20 +2022,20 @@ impl eframe::App for App {
         }
         if toggle_silent_startup {
             self.silent_startup = !self.silent_startup;
-            let s = if self.silent_startup { "🤫 Silent startup ON." } else { "Silent startup OFF." };
+            let s = if self.silent_startup { i18n::status_msg(self.language).silent_startup_on } else { i18n::status_msg(self.language).silent_startup_off };
             self.set_status_neutral(s);
             self.persist();
         }
         if toggle_fast_scan {
             self.fast_scan = !self.fast_scan;
             self.fast_scan_arc.store(self.fast_scan, Ordering::Relaxed);
-            let s = if self.fast_scan { "⚡ Fast scan ON (100ms)." } else { "Fast scan OFF (500ms)." };
+            let s = if self.fast_scan { i18n::status_msg(self.language).fast_scan_on } else { i18n::status_msg(self.language).fast_scan_off };
             self.set_status_neutral(s);
             self.persist();
         }
         if toggle_strip_on_launch {
             self.strip_on_launch = !self.strip_on_launch;
-            let s = if self.strip_on_launch { "🚀 Strip on launch ON." } else { "Strip on launch OFF." };
+            let s = if self.strip_on_launch { i18n::status_msg(self.language).strip_on_launch_on } else { i18n::status_msg(self.language).strip_on_launch_off };
             self.set_status_neutral(s);
             self.persist();
         }
@@ -2319,11 +2044,11 @@ impl eframe::App for App {
                 (Some(src), Some(desktop)) => {
                     let dest = desktop.join("capture-bypass-config.toml");
                     match std::fs::copy(&src, &dest) {
-                        Ok(_) => self.set_status("📤 Config exported to Desktop.", true),
-                        Err(e) => self.set_status(format!("✗ Export failed: {e}"), false),
+                        Ok(_) => self.set_status(i18n::status_msg(self.language).config_exported, true),
+                        Err(e) => self.set_status(i18n::status_msg(self.language).export_failed.replace("{e}", &e.to_string()), false),
                     }
                 }
-                _ => self.set_status("✗ Could not determine config or desktop path.", false),
+                _ => self.set_status(i18n::status_msg(self.language).could_not_determine_path, false),
             }
         }
         if do_import_config {
@@ -2354,9 +2079,9 @@ impl eframe::App for App {
                     self.exclusions        = imported.exclusions.clone();
                     *self.auto_inject_exclusions.lock().unwrap() = imported.exclusions.clone();
                     self.persist();
-                    self.set_status("📥 Config imported from Desktop.", true);
+                    self.set_status(i18n::status_msg(self.language).config_imported, true);
                 }
-                None => self.set_status("✗ Could not determine desktop path.", false),
+                None => self.set_status(i18n::status_msg(self.language).could_not_determine_desktop, false),
             }
         }
         if add_process_rule {
@@ -2418,7 +2143,7 @@ impl eframe::App for App {
                     register_hotkey(self.hotkey_id, mods, vk);
                 }
                 let combo = hotkey_display(mods, vk);
-                self.set_status_neutral(format!("⌨ Hotkey set to: {combo}"));
+                self.set_status_neutral(i18n::status_msg(self.language).hotkey_set.replace("{combo}", &combo));
                 self.persist();
             } else if escape {
                 self.hotkey_recording = false;
@@ -2457,10 +2182,11 @@ impl eframe::App for App {
                         if seen.insert(w.pid) {
                             self.one_shot_stripped.insert(w.pid, w.process_name.clone());
                             if BROWSER_NAMES.iter().any(|b| w.process_name.eq_ignore_ascii_case(b)) {
+                                let child_suffix = i18n::inject(self.language).child_suffix.to_string();
                                 for child_pid in get_child_pids(w.pid) {
                                     self.one_shot_stripped.insert(
                                         child_pid,
-                                        format!("{} (child)", w.process_name),
+                                        child_suffix.replace("{name}", &w.process_name),
                                     );
                                 }
                             }
@@ -2469,7 +2195,7 @@ impl eframe::App for App {
                 }
                 self.strip_all_protected(&all_windows);
             } else {
-                self.set_status_neutral("No protected windows found — hit Refresh first.");
+                self.set_status_neutral(i18n::status_msg(self.language).no_protected_found);
             }
         }
 
@@ -2514,15 +2240,16 @@ impl eframe::App for App {
 
         // Injection log panel
         if self.show_log {
+            let l = i18n::log(self.language);
             egui::TopBottomPanel::bottom("log_panel")
                 .resizable(true)
                 .min_height(80.0)
                 .default_height(150.0)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.strong("Injection Log");
+                        ui.strong(l.title);
                         ui.add_space(8.0);
-                        if ui.small_button("Clear").clicked() {
+                        if ui.small_button(l.clear).clicked() {
                             self.log_entries.clear();
                         }
                     });
@@ -2554,9 +2281,10 @@ impl eframe::App for App {
         let mut inject_target: Option<WindowEntry> = None;
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            let t = i18n::table(self.language);
             if filtered.is_empty() {
                 ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("No matching windows.").weak().italics());
+                    ui.label(RichText::new(t.no_matching_windows).weak().italics());
                 });
                 return;
             }
@@ -2580,27 +2308,27 @@ impl eframe::App for App {
                         if sc == col { if sa { " ▲" } else { " ▼" } } else { "" }
                     };
                     header.col(|ui| {
-                        if ui.button(format!("PID{}", arrow(SortCol::Pid))).clicked() {
+                        if ui.button(format!("{}{}", t.pid, arrow(SortCol::Pid))).clicked() {
                             new_sort = Some((SortCol::Pid, if sc == SortCol::Pid { !sa } else { true }));
                         }
                     });
                     header.col(|ui| {
-                        if ui.button(format!("Process{}", arrow(SortCol::Process))).clicked() {
+                        if ui.button(format!("{}{}", t.process, arrow(SortCol::Process))).clicked() {
                             new_sort = Some((SortCol::Process, if sc == SortCol::Process { !sa } else { true }));
                         }
                     });
-                    header.col(|ui| { ui.strong("Arch"); });
+                    header.col(|ui| { ui.strong(t.arch); });
                     header.col(|ui| {
-                        if ui.button(format!("Window Title{}", arrow(SortCol::Title))).clicked() {
+                        if ui.button(format!("{}{}", t.window_title, arrow(SortCol::Title))).clicked() {
                             new_sort = Some((SortCol::Title, if sc == SortCol::Title { !sa } else { true }));
                         }
                     });
                     header.col(|ui| {
-                        if ui.button(format!("Status{}", arrow(SortCol::Status))).clicked() {
+                        if ui.button(format!("{}{}", t.status, arrow(SortCol::Status))).clicked() {
                             new_sort = Some((SortCol::Status, if sc == SortCol::Status { !sa } else { true }));
                         }
                     });
-                    header.col(|ui| { ui.strong("Action"); });
+                    header.col(|ui| { ui.strong(t.action); });
                 })
                 .body(|mut body| {
                     for entry in &filtered {
@@ -2651,13 +2379,13 @@ impl eframe::App for App {
                             });
                             // Status badge
                             row.col(|ui| {
-                                render_status_badge(ui, entry.affinity);
+                                render_status_badge(ui, entry.affinity, self.language);
                             });
                             // Action button
                             row.col(|ui| {
                                 if ui
                                     .add(
-                                        egui::Button::new("Strip Protection")
+                                        egui::Button::new(i18n::table(self.language).strip_protection)
                                             .min_size([140.0, 20.0].into()),
                                     )
                                     .clicked()
@@ -2675,9 +2403,10 @@ impl eframe::App for App {
             if !self.persistent_mode {
                 self.one_shot_stripped.insert(target.pid, target.process_name.clone());
                 if BROWSER_NAMES.iter().any(|b| target.process_name.eq_ignore_ascii_case(b)) {
+                    let child_suffix = i18n::inject(self.language).child_suffix.to_string();
                     for child_pid in get_child_pids(target.pid) {
                         self.one_shot_stripped
-                            .insert(child_pid, format!("{} (child)", target.process_name));
+                            .insert(child_pid, child_suffix.replace("{name}", &target.process_name));
                     }
                 }
             }
@@ -2687,14 +2416,13 @@ impl eframe::App for App {
         // Re-protection modal
         // Shown when a one-shot-stripped process has re-applied capture protection.
         if !self.reapply_alert.is_empty() {
-            egui::Window::new("⚠️  Protection Re-applied")
+            let r = i18n::reapply(self.language);
+            egui::Window::new(r.window_title)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label(
-                        "The following app(s) re-applied capture protection after being stripped:",
-                    );
+                    ui.label(r.description);
                     ui.add_space(4.0);
                     for (pid, name) in &self.reapply_alert {
                         ui.label(
@@ -2706,27 +2434,19 @@ impl eframe::App for App {
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.label(
-                        "⚡ One-shot mode injects once and exits — Windows caches the DLL path,\n\
-                         so re-injecting with the same file is a no-op.",
-                    );
+                    ui.label(r.one_shot_hint);
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new(
-                            "✅  Fix: switch to 🔁 Persistent mode.\n\
-                             The persistent DLL hooks SetWindowDisplayAffinity at the call site\n\
-                             (IAT hook) so protection can never be re-applied via a static import.\n\
-                             A 5 s polling fallback handles dynamic callers as a safety net.",
-                        )
-                        .strong(),
+                        RichText::new(r.fix_hint)
+                            .strong(),
                     );
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if theme::primary(ui, "Switch to Persistent & Re-strip").clicked() {
+                        if theme::primary(ui, r.switch_button).clicked() {
                             switch_and_restrip = true;
                         }
                         ui.add_space(8.0);
-                        if ui.button("Dismiss").clicked() {
+                        if ui.button(r.dismiss).clicked() {
                             dismiss_reapply = true;
                         }
                     });
@@ -2755,10 +2475,7 @@ impl eframe::App for App {
                 self.inject_pid_async(*pid, name.clone(), is_32bit);
             }
             self.set_status(
-                format!(
-                    "🔁 Switched to Persistent — re-stripping {} process(es).",
-                    alerted.len()
-                ),
+                i18n::status_msg(self.language).switched_to_persistent.replace("{count}", &alerted.len().to_string()),
                 true,
             );
         }
@@ -2793,10 +2510,12 @@ fn render_help_body(ui: &mut egui::Ui, body: &str) {
     }
 }
 
-fn render_help_window(ctx: &egui::Context, show: &mut bool, section: &mut usize) {
+fn render_help_window(ctx: &egui::Context, show: &mut bool, section: &mut usize, lang: Language) {
     if !*show {
         return;
     }
+
+    let help = help_sections(lang);
 
     egui::Window::new("📖  Help")
         .open(show)
@@ -2810,7 +2529,7 @@ fn render_help_window(ctx: &egui::Context, show: &mut bool, section: &mut usize)
             // horizontal_top, so the window never expands sideways.
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(2.0);
-                for (i, (title, _)) in HELP_SECTIONS.iter().enumerate() {
+                for (i, (title, _)) in help.iter().enumerate() {
                     let selected = *section == i;
                     if theme::toggle_button(ui, selected, *title)
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -2828,7 +2547,7 @@ fn render_help_window(ctx: &egui::Context, show: &mut bool, section: &mut usize)
                 .id_salt("help_content")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    if let Some((tab_title, sub_sections)) = HELP_SECTIONS.get(*section) {
+                    if let Some((tab_title, sub_sections)) = help.get(*section) {
                         ui.add_space(4.0);
                         ui.label(RichText::new(*tab_title).size(18.0).strong());
                         ui.add_space(8.0);
@@ -2858,6 +2577,7 @@ fn render_help_window(ctx: &egui::Context, show: &mut bool, section: &mut usize)
 fn render_settings_window(
     ctx: &egui::Context,
     show: &mut bool,
+    lang: Language,
     startup_enabled: bool,
     toast_enabled: bool,
     hotkey_enabled: bool,
@@ -2898,7 +2618,9 @@ fn render_settings_window(
         return;
     }
 
-    egui::Window::new("⚙  Settings")
+    let s = i18n::settings(lang);
+
+    egui::Window::new(s.window_title)
         .open(show)
         .resizable(true)
         .collapsible(false)
@@ -2908,35 +2630,31 @@ fn render_settings_window(
             ui.add_space(4.0);
 
             // Startup
-            ui.label(RichText::new("Startup").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.startup).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
-            if theme::setting_row(ui, startup_enabled, "Start with Windows",
-                "Launch at login (UAC prompt each time — needs admin).") {
+            if theme::setting_row(ui, startup_enabled, s.start_with_windows,
+                s.start_with_windows_desc) {
                 *toggle_startup = true;
             }
-            if theme::setting_row(ui, silent_startup, "Silent startup",
-                "Start minimized straight to the system tray.") {
+            if theme::setting_row(ui, silent_startup, s.silent_startup,
+                s.silent_startup_desc) {
                 *toggle_silent_startup = true;
             }
-            if theme::setting_row(ui, strip_on_launch, "Strip all on launch",
-                "Clear every protected window on the first scan.") {
+            if theme::setting_row(ui, strip_on_launch, s.strip_on_launch,
+                s.strip_on_launch_desc) {
                 *toggle_strip_on_launch = true;
             }
             ui.add_space(12.0);
 
             // Windows Defender
-            ui.label(RichText::new("Windows Defender").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.windows_defender).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
             ui.label(
-                RichText::new(
-                    "If Defender flags payload_dll.dll or payload_dll_persistent.dll as \
-                     suspicious, add an exclusion manually. Open PowerShell as Administrator \
-                     and run:"
-                )
-                .weak()
-                .small(),
+                RichText::new(s.defender_hint)
+                    .weak()
+                    .small(),
             );
             ui.add_space(4.0);
             let mut ps_cmd = format!(
@@ -2950,31 +2668,32 @@ fn render_settings_window(
                     .interactive(false),
             );
             ui.add_space(4.0);
-            if ui.button("📋  Copy commands").clicked() {
+            if ui.button(s.copy_commands).clicked() {
                 ui.output_mut(|o| o.copied_text = ps_cmd.clone());
             }
             ui.add_space(12.0);
 
             // Notifications
-            ui.label(RichText::new("Notifications").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.notifications).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
-            if theme::setting_row(ui, toast_enabled, "Desktop notifications",
-                "Toast when auto-inject strips a process in the background.") {
+            if theme::setting_row(ui, toast_enabled, s.desktop_notifications,
+                s.desktop_notifications_desc) {
                 *toggle_toast = true;
             }
             ui.add_space(12.0);
 
             // Hotkey
-            ui.label(RichText::new("Hotkey").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.hotkey).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
 
             let combo = hotkey_display(hotkey_mods, hotkey_key);
+            let hk_state = if hotkey_enabled { s.on } else { s.off };
             ui.horizontal(|ui| {
-                let hk_label = format!("{}  {}", combo, if hotkey_enabled { "(ON)" } else { "(OFF)" });
+                let hk_label = format!("{}  {}", combo, hk_state);
                 if theme::toggle_button(ui, hotkey_enabled, &hk_label)
-                    .on_hover_text("Toggle the global hotkey on or off")
+                    .on_hover_text(s.toggle_hotkey_hint)
                     .clicked()
                 {
                     *toggle_hotkey = true;
@@ -2982,11 +2701,11 @@ fn render_settings_window(
 
                 // Change-hotkey button / recording indicator
                 if hotkey_recording {
-                    theme::danger(ui, "● Listening…")
-                        .on_hover_text("Press a key combo (Ctrl/Shift/Alt + key). Esc to cancel.");
+                    theme::danger(ui, s.listening)
+                        .on_hover_text(s.listening_hint);
                 } else {
-                    if theme::ghost(ui, "Change…")
-                        .on_hover_text("Click then press a new key combination")
+                    if theme::ghost(ui, s.change)
+                        .on_hover_text(s.change_hint)
                         .clicked()
                     {
                         *start_hotkey_recording = true;
@@ -2997,34 +2716,31 @@ fn render_settings_window(
 
             // Description
             let desc = if hotkey_recording {
-                RichText::new("  Press any key with Ctrl, Shift, or Alt held. Esc to cancel.")
+                RichText::new(s.press_key_hint)
                     .size(10.5).color(theme::DANGER)
             } else {
-                RichText::new(format!(
-                    "  {} → Strip All Protected windows, even when minimised to tray.",
-                    combo
-                ))
+                RichText::new(s.hotkey_desc.replace("{combo}", &combo))
                 .size(10.5).color(theme::TEXT_DIM)
             };
             ui.label(desc);
             ui.add_space(12.0);
 
             // Window
-            ui.label(RichText::new("Window").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.window).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
-            if theme::setting_row(ui, minimize_to_tray, "Minimize to tray on close",
-                "✕ hides to the tray instead of quitting (tray Quit still exits).") {
+            if theme::setting_row(ui, minimize_to_tray, s.minimize_to_tray,
+                s.minimize_to_tray_desc) {
                 *toggle_minimize_to_tray = true;
             }
             ui.add_space(12.0);
 
             // Logging
-            ui.label(RichText::new("Logging").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.logging).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
-            if theme::setting_row(ui, logging_enabled, "Injection log file",
-                "Append a timestamped entry to injection.log on every strip.") {
+            if theme::setting_row(ui, logging_enabled, s.injection_log_file,
+                s.injection_log_file_desc) {
                 *toggle_logging = true;
             }
             if logging_enabled {
@@ -3032,7 +2748,7 @@ fn render_settings_window(
                 ui.horizontal(|ui| {
                     ui.add_space(4.0);
                     if ui
-                        .button("📂  Open log file")
+                        .button(s.open_log_file)
                         .on_hover_text("%APPDATA%\\capture-bypass\\injection.log")
                         .clicked()
                     {
@@ -3049,35 +2765,35 @@ fn render_settings_window(
             ui.add_space(8.0);
 
             // Discord Rich Presence
-            ui.label(RichText::new("Discord").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.discord).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
-            if theme::setting_row(ui, discord_rpc_enabled, "Discord Rich Presence",
-                "Show mode, auto-inject state, and strip count in Discord.") {
+            if theme::setting_row(ui, discord_rpc_enabled, s.discord_rich_presence,
+                s.discord_rich_presence_desc) {
                 *toggle_discord_rpc = true;
             }
             ui.add_space(8.0);
 
             // Detection
-            ui.label(RichText::new("Detection").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.detection).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
-            if theme::setting_row(ui, fast_scan, "Fast scan — 100 ms",
-                "Scan every 100 ms instead of 500 ms (slightly more CPU).") {
+            if theme::setting_row(ui, fast_scan, s.fast_scan,
+                s.fast_scan_desc) {
                 *toggle_fast_scan = true;
             }
             ui.add_space(12.0);
 
             // Per-process Rules
-            ui.label(RichText::new("Per-process Rules").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.per_process_rules).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(rule_input).desired_width(130.0).hint_text("process.exe"));
                 let mode_label = match rule_mode_input {
-                    ProcessRuleMode::AlwaysOneShot    => "One-shot",
-                    ProcessRuleMode::AlwaysPersistent => "Persistent",
-                    ProcessRuleMode::Skip             => "Skip",
+                    ProcessRuleMode::AlwaysOneShot    => s.one_shot,
+                    ProcessRuleMode::AlwaysPersistent => s.persistent,
+                    ProcessRuleMode::Skip             => s.skip,
                 };
                 if ui.button(mode_label).clicked() {
                     *rule_mode_input = match rule_mode_input {
@@ -3086,7 +2802,7 @@ fn render_settings_window(
                         ProcessRuleMode::Skip             => ProcessRuleMode::AlwaysOneShot,
                     };
                 }
-                if ui.button("➕").clicked() {
+                if ui.button(s.add_rule).clicked() {
                     *add_process_rule = true;
                 }
             });
@@ -3094,9 +2810,9 @@ fn render_settings_window(
             let rules_snapshot: Vec<(usize, String, String)> = process_rules.iter().enumerate()
                 .map(|(i, r)| {
                     let mode_str = match r.mode {
-                        ProcessRuleMode::AlwaysOneShot    => "One-shot",
-                        ProcessRuleMode::AlwaysPersistent => "Persistent",
-                        ProcessRuleMode::Skip             => "Skip",
+                        ProcessRuleMode::AlwaysOneShot    => s.one_shot,
+                        ProcessRuleMode::AlwaysPersistent => s.persistent,
+                        ProcessRuleMode::Skip             => s.skip,
                     };
                     (i, r.process_name.clone(), mode_str.to_string())
                 })
@@ -3112,12 +2828,12 @@ fn render_settings_window(
             ui.add_space(12.0);
 
             // Exclusions
-            ui.label(RichText::new("Exclusions").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.exclusions).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(exclusion_input).desired_width(150.0).hint_text("process.exe"));
-                if ui.button("➕ Add").clicked() {
+                if ui.button(s.add_exclusion).clicked() {
                     *add_exclusion = true;
                 }
             });
@@ -3136,15 +2852,15 @@ fn render_settings_window(
             ui.add_space(12.0);
 
             // Config export/import
-            ui.label(RichText::new("Config").strong().color(theme::ACCENT));
+            ui.label(RichText::new(s.config).strong().color(theme::ACCENT));
             ui.separator();
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("📤 Export").on_hover_text("Export config to Desktop as capture-bypass-config.toml").clicked() {
+                if ui.button(s.export).on_hover_text(s.export_hint).clicked() {
                     *do_export_config = true;
                 }
                 ui.add_space(8.0);
-                if ui.button("📥 Import").on_hover_text("Import config from Desktop capture-bypass-config.toml").clicked() {
+                if ui.button(s.import).on_hover_text(s.import_hint).clicked() {
                     *do_import_config = true;
                 }
             });
@@ -3155,16 +2871,17 @@ fn render_settings_window(
 
 // Status badge
 
-fn render_status_badge(ui: &mut Ui, affinity: u32) {
+fn render_status_badge(ui: &mut Ui, affinity: u32, lang: Language) {
+    let b = i18n::badge(lang);
     match affinity {
         WDA_EXCLUDEFROMCAPTURE => {
-            ui.label(RichText::new("● PROTECTED").monospace().size(11.0).color(theme::DANGER).strong());
+            ui.label(RichText::new(b.protected).monospace().size(11.0).color(theme::DANGER).strong());
         }
         WDA_MONITOR => {
-            ui.label(RichText::new("● MONITOR").monospace().size(11.0).color(theme::AMBER).strong());
+            ui.label(RichText::new(b.monitor).monospace().size(11.0).color(theme::AMBER).strong());
         }
         WDA_NONE => {
-            ui.label(RichText::new("● CLEAR").monospace().size(11.0).color(theme::SUCCESS).strong());
+            ui.label(RichText::new(b.clear).monospace().size(11.0).color(theme::SUCCESS).strong());
         }
         _ => {
             ui.label(RichText::new("● ?").monospace().size(11.0).color(theme::TEXT_FAINT));
@@ -3186,7 +2903,7 @@ fn make_tray_icon(r: u8, g: u8, b: u8) -> Option<tray_icon::Icon> {
     tray_icon::Icon::from_rgba(rgba, size, size).ok()
 }
 
-fn build_tray() -> (
+fn build_tray(lang: Language) -> (
     Option<tray_icon::TrayIcon>,
     Option<tray_icon::menu::MenuId>,
     Option<tray_icon::menu::MenuId>,
@@ -3195,6 +2912,8 @@ fn build_tray() -> (
         menu::{Menu, MenuItem, PredefinedMenuItem},
         Icon, TrayIconBuilder,
     };
+
+    let t = i18n::tray(lang);
 
     // Generate a 32×32 solid blue square as the tray icon
     let size: u32 = 32;
@@ -3211,8 +2930,8 @@ fn build_tray() -> (
         Err(_) => return (None, None, None),
     };
 
-    let open_item = MenuItem::new("Open", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
+    let open_item = MenuItem::new(t.open, true, None);
+    let quit_item = MenuItem::new(t.quit, true, None);
     let open_id = open_item.id().clone();
     let quit_id = quit_item.id().clone();
 

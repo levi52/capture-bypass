@@ -1,6 +1,6 @@
 [package]
 name = "gui"
-version = "3.4.13"
+version = "3.6.5"
 edition = "2021"
 
 [[bin]]
