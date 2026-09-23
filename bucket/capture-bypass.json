@@ -6,11 +6,11 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/levi52/capture-bypass/releases/download/v3.6.5/capture-bypass-3.6.5-portable-x64.zip",
-      "hash": "sha256:534c7b5354c3019a2cc3e38f62f22961df604eecd3c150b6a1158a8f9583f95d"
+      "hash": "sha256:4f742826bf1632d89e2be114893092ab13f7934c7fffc223415941b4ffdfe5c3"
     },
     "arm64": {
       "url": "https://github.com/levi52/capture-bypass/releases/download/v3.6.5/capture-bypass-3.6.5-portable-arm64.zip",
-      "hash": "sha256:186d127adfd3844fef0b7783135422eec32b0a70049e433a8a14628f890ab79a"
+      "hash": "sha256:36b813678402b4ba2a08145c9e7c68233723d1d023cb661855b8a7ecb3a792a4"
     }
   },
   "bin": [
@@ -34,7 +34,7 @@
         "url": "https://github.com/levi52/capture-bypass/releases/download/v$version/capture-bypass-$version-portable-x64.zip"
       },
       "arm64": {
-        "url": "https://github.com/levi52/capture-bypass/releases/download/v$version/capture-bypass-$version-portable-arm64.zip"
+        "url": "https://github.com/levi52/capture-bypass/releases/download/v3.6.5/capture-bypass-$version-portable-arm64.zip"
       }
     }
   }
