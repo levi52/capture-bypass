@@ -169,7 +169,7 @@ jobs:
             '',
             '**Scoop**',
             '```powershell',
-            'scoop bucket add Londopy https://github.com/Londopy/capture-bypass',
+            'scoop bucket add levi52 https://github.com/levi52/capture-bypass',
             'scoop install capture-bypass',
             '```',
             '',
@@ -192,7 +192,7 @@ jobs:
           $body -join "`n" | Out-File dist\release-body.txt -Encoding utf8NoBOM
 
           # ── Scoop manifest ────────────────────────────────────────────────────
-          $base = "https://github.com/Londopy/capture-bypass/releases/download/v$version"
+          $base = "https://github.com/levi52/capture-bypass/releases/download/v$version"
           $manifest = Get-Content bucket\capture-bypass.json -Raw | ConvertFrom-Json
           $manifest.version = $version
 

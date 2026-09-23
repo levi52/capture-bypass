@@ -43,7 +43,7 @@ use windows::Win32::{
     UI::{
         Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON},
         Input::KeyboardAndMouse::{
-            HOT_KEY_MODIFIERS, MOD_CONTROL, MOD_SHIFT, RegisterHotKey, UnregisterHotKey,
+            HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
         },
         Accessibility::{SetWinEventHook, HWINEVENTHOOK},
         WindowsAndMessaging::{
@@ -1207,11 +1207,11 @@ impl App {
                         .buttons(vec![
                             activity::Button::new(
                                 d.get_capture_bypass,
-                                "https://github.com/Londopy/capture-bypass/releases/latest",
+                                "https://github.com/levi52/capture-bypass/releases/latest",
                             ),
                             activity::Button::new(
                                 "★ GitHub",
-                                "https://github.com/Londopy/capture-bypass",
+                                "https://github.com/levi52/capture-bypass",
                             ),
                         ]),
                 );
@@ -1231,11 +1231,11 @@ impl App {
                                     .buttons(vec![
                                         activity::Button::new(
                                             d.get_capture_bypass,
-                                            "https://github.com/Londopy/capture-bypass/releases/latest",
+                                            "https://github.com/levi52/capture-bypass/releases/latest",
                                         ),
                                         activity::Button::new(
                                             "★ GitHub",
-                                            "https://github.com/Londopy/capture-bypass",
+                                            "https://github.com/levi52/capture-bypass",
                                         ),
                                     ]),
                             );
@@ -1361,27 +1361,16 @@ impl eframe::App for App {
             self.download_rx = None;
         }
 
-        // If the user already confirmed the update, fire the installer the moment
-        // the download finishes — no second button click required.
+        // If the user already confirmed the update, apply it the moment the
+        // download finishes — no second button click required.
         if self.update_confirmed {
             if let DownloadState::Ready(_) = &self.download_state {
                 if let DownloadState::Ready(path) =
                     std::mem::replace(&mut self.download_state, DownloadState::Idle)
                 {
                     self.update_confirmed = false;
-                    let our_exe = std::env::current_exe()
-                        .unwrap_or_else(|_| self.exe_dir.join("capture_bypass_gui.exe"));
-                    let installer_str = path.display().to_string().replace('\'', "''");
-                    let gui_str = our_exe.display().to_string().replace('\'', "''");
-                    let script = format!(
-                        "Start-Process '{installer_str}' -ArgumentList '/SILENT' -Wait; \
-                         Start-Process '{gui_str}'"
-                    );
-                    let _ = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-WindowStyle", "Hidden",
-                               "-Command", &script])
-                        .spawn();
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    let exe_dir = self.exe_dir.clone();
+                    apply_update(&path, &exe_dir);
                 }
             }
         }
@@ -1731,37 +1720,8 @@ impl eframe::App for App {
                             if let DownloadState::Ready(path) =
                                 std::mem::replace(&mut self.download_state, DownloadState::Idle)
                             {
-                                // Spawn a hidden PowerShell process that:
-                                //   1. Runs the installer silently and waits for it to finish
-                                //   2. Relaunches capture_bypass_gui.exe
-                                // This works around /RESTARTAPPLICATIONS not relaunching the app,
-                                // since the app is already closed before the installer completes.
-                                let our_exe = std::env::current_exe()
-                                    .unwrap_or_else(|_| self.exe_dir.join("capture_bypass_gui.exe"));
-                                let installer_str = path.display().to_string().replace('\'', "''");
-                                let gui_str = our_exe.display().to_string().replace('\'', "''");
-                                let script = format!(
-                                    // 1. Wait 2 s for this process to fully exit and release
-                                    //    the file lock on capture_bypass_gui.exe before the
-                                    //    installer tries to replace it.
-                                    // 2. Run the installer silently, suppressing all dialogs.
-                                    // 3. Relaunch with -Verb RunAs so the new exe gets admin
-                                    //    rights without a visible UAC prompt (inherits the
-                                    //    already-elevated token from this PowerShell session).
-                                    "Start-Sleep -Seconds 2; \
-                                     Start-Process '{installer_str}' \
-                                       -ArgumentList '/SILENT /SUPPRESSMSGBOXES /NORESTART' \
-                                       -Wait; \
-                                     Start-Process '{gui_str}' -Verb RunAs"
-                                );
-                                let _ = std::process::Command::new("powershell")
-                                    .args(["-NoProfile", "-WindowStyle", "Hidden",
-                                           "-Command", &script])
-                                    .spawn();
-                                // Exit immediately — ViewportCommand::Close is async and
-                                // keeps the process alive long enough to lock the exe file,
-                                // causing the installer to silently fail the file replacement.
-                                std::process::exit(0);
+                                let exe_dir = self.exe_dir.clone();
+                                apply_update(&path, &exe_dir);
                             }
                         }
 
@@ -3242,42 +3202,47 @@ fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-// Kick off the background installer download.
-// Detects installer vs portable; portable users get the browser instead.
+// Which release asset does this install need?
+//   installed (unins000.exe present) → the Inno Setup installer
+//   portable (zip extraction)        → the portable zip
+// Returns (asset file name, is_portable).
+fn update_asset(tag: &str, exe_dir: &std::path::Path) -> (String, bool) {
+    // Detect architecture — ARM64 native build gets the arm64 asset
+    #[cfg(target_arch = "aarch64")]
+    let arch_suffix = "arm64";
+    #[cfg(not(target_arch = "aarch64"))]
+    let arch_suffix = "x64";
+
+    let is_portable = !exe_dir.join("unins000.exe").exists();
+    let name = if is_portable {
+        format!("capture-bypass-{tag}-portable-{arch_suffix}.zip")
+    } else {
+        format!("capture-bypass-setup-{tag}-{arch_suffix}.exe")
+    };
+    (name, is_portable)
+}
+
+// Kick off the background update download.
+// Portable installs download the portable zip; installed ones get the installer.
 fn start_download(
     tag: String,
     download_state: &mut DownloadState,
     download_rx: &mut Option<Receiver<DownloadMsg>>,
     exe_dir: &std::path::Path,
 ) {
-    // Portable installs have no unins000.exe next to them.
-    // We can't self-update a portable safely, so just open the releases page.
-    if !exe_dir.join("unins000.exe").exists() {
-        let _ = std::process::Command::new("explorer.exe")
-            .arg("https://github.com/Londopy/capture-bypass/releases/latest")
-            .spawn();
-        return;
-    }
+    let (asset, _is_portable) = update_asset(&tag, exe_dir);
 
     *download_state = DownloadState::Downloading(0.0);
     let (tx, rx) = mpsc::channel::<DownloadMsg>();
     *download_rx = Some(rx);
 
-    // Detect architecture — ARM64 native build gets the arm64 installer
-    #[cfg(target_arch = "aarch64")]
-    let arch_suffix = "arm64";
-    #[cfg(not(target_arch = "aarch64"))]
-    let arch_suffix = "x64";
-
     std::thread::Builder::new()
         .name("update-download".into())
         .spawn(move || {
             let url = format!(
-                "https://github.com/Londopy/capture-bypass/releases/download/v{tag}/\
-                 capture-bypass-setup-{tag}-{arch_suffix}.exe"
+                "https://github.com/levi52/capture-bypass/releases/download/v{tag}/{asset}"
             );
-            let dest = std::env::temp_dir()
-                .join(format!("capture-bypass-update-{tag}.exe"));
+            let dest = std::env::temp_dir().join(&asset);
 
             // Download with progress
             let resp = match ureq::get(&url)
@@ -3286,7 +3251,9 @@ fn start_download(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(DownloadMsg::Failed(format!("Download failed: {e}")));
+                    let _ = tx.send(DownloadMsg::Failed(format!(
+                        "Download failed ({asset}): {e}"
+                    )));
                     return;
                 }
             };
@@ -3329,7 +3296,7 @@ fn start_download(
             // Verify SHA256 against the release's SHA256SUMS.txt
             let _ = tx.send(DownloadMsg::Verifying);
             let sums_url = format!(
-                "https://github.com/Londopy/capture-bypass/releases/download/v{tag}/SHA256SUMS.txt"
+                "https://github.com/levi52/capture-bypass/releases/download/v{tag}/SHA256SUMS.txt"
             );
             if let Ok(sums_resp) = ureq::get(&sums_url)
                 .set("User-Agent", &format!("capture-bypass/{}", env!("CARGO_PKG_VERSION")))
@@ -3337,9 +3304,8 @@ fn start_download(
             {
                 if let Ok(body) = sums_resp.into_string() {
                     // Each line: "<hash>  <filename>"
-                    let installer_name = format!("capture-bypass-setup-{tag}-{arch_suffix}.exe");
                     let expected = body.lines()
-                        .find(|l| l.ends_with(&installer_name))
+                        .find(|l| l.ends_with(&asset))
                         .and_then(|l| l.split_whitespace().next())
                         .map(|s| s.to_lowercase());
 
@@ -3371,6 +3337,66 @@ fn start_download(
         .ok();
 }
 
+// Apply a verified update and relaunch.
+//
+//   installer (.exe) → run it silently, wait, relaunch
+//   portable   (.zip) → extract to a staging dir, copy over the exe dir, relaunch
+//
+// A hidden PowerShell does the work *after* this process exits, because the
+// running capture_bypass_gui.exe holds a lock on its own file.  The app calls
+// std::process::exit(0) immediately after spawning, so the 2 s sleep is only a
+// safety margin for the OS to release the handle.
+fn apply_update(artifact: &std::path::Path, exe_dir: &std::path::Path) {
+    let our_exe = std::env::current_exe()
+        .unwrap_or_else(|_| exe_dir.join("capture_bypass_gui.exe"));
+    let gui_str = our_exe.display().to_string().replace('\'', "''");
+
+    let script = if artifact.extension().map(|e| e.eq_ignore_ascii_case("zip")).unwrap_or(false) {
+        let zip_str = artifact.display().to_string().replace('\'', "''");
+        let stage = std::env::temp_dir().join("capture-bypass-update-stage");
+        let stage_str = stage.display().to_string().replace('\'', "''");
+        let dir_str = exe_dir.display().to_string().replace('\'', "''");
+        format!(
+            // 1. Wait for this process to fully exit and release the file lock.
+            // 2. Extract the portable zip into a clean staging directory.
+            // 3. Copy every file (including the x86\ subfolder) over the
+            //    install directory, overwriting the old build.
+            // 4. Relaunch with -Verb RunAs so the new exe keeps admin rights
+            //    (inherits the already-elevated token from this session).
+            "Start-Sleep -Seconds 2; \
+             if (Test-Path -LiteralPath '{stage_str}') {{ \
+               Remove-Item -LiteralPath '{stage_str}' -Recurse -Force }}; \
+             Expand-Archive -LiteralPath '{zip_str}' -DestinationPath '{stage_str}' -Force; \
+             Copy-Item -Path (Join-Path '{stage_str}' '*') \
+                       -Destination '{dir_str}' -Recurse -Force; \
+             Remove-Item -LiteralPath '{stage_str}' -Recurse -Force; \
+             Start-Process '{gui_str}' -Verb RunAs"
+        )
+    } else {
+        let installer_str = artifact.display().to_string().replace('\'', "''");
+        format!(
+            // 1. Wait for this process to fully exit and release the file lock
+            //    on capture_bypass_gui.exe before the installer replaces it.
+            // 2. Run the installer silently, suppressing all dialogs.
+            // 3. Relaunch with -Verb RunAs so the new exe gets admin rights
+            //    without a visible UAC prompt.
+            "Start-Sleep -Seconds 2; \
+             Start-Process '{installer_str}' \
+               -ArgumentList '/SILENT /SUPPRESSMSGBOXES /NORESTART' \
+               -Wait; \
+             Start-Process '{gui_str}' -Verb RunAs"
+        )
+    };
+
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden",
+               "-Command", &script])
+        .spawn();
+    // Exit immediately — ViewportCommand::Close is async and keeps the process
+    // alive long enough to lock the exe file, causing the replacement to fail.
+    std::process::exit(0);
+}
+
 fn sha256_of_file(path: &std::path::Path)
     -> Result<String, Box<dyn std::error::Error + Send + Sync>>
 {
@@ -3395,7 +3421,7 @@ fn sha256_of_file(path: &std::path::Path)
 fn check_for_update() -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
     let current = env!("CARGO_PKG_VERSION");
     let resp: serde_json::Value = ureq::get(
-        "https://api.github.com/repos/Londopy/capture-bypass/releases/latest",
+        "https://api.github.com/repos/levi52/capture-bypass/releases/latest",
     )
     .set("User-Agent", &format!("capture-bypass/{current}"))
     .call()?

@@ -246,30 +246,6 @@ pub fn badge(lang: Language) -> &'static BadgeStrings {
     }
 }
 
-// ── Status bar ──────────────────────────────────────────────────────────
-
-pub struct StatusBarStrings {
-    pub ready: &'static str,
-    pub seconds_ago: &'static str,
-}
-
-const STATUS_BAR_EN: StatusBarStrings = StatusBarStrings {
-    ready: "Ready.",
-    seconds_ago: " [{secs}s ago]",
-};
-
-const STATUS_BAR_ZH: StatusBarStrings = StatusBarStrings {
-    ready: "就绪。",
-    seconds_ago: " [{secs}秒前]",
-};
-
-pub fn status_bar(lang: Language) -> &'static StatusBarStrings {
-    match lang {
-        Language::English => &STATUS_BAR_EN,
-        Language::Chinese => &STATUS_BAR_ZH,
-    }
-}
-
 // ── Injection messages (format templates) ──────────────────────────────
 
 pub struct InjectStrings {

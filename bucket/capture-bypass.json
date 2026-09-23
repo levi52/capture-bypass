@@ -1,15 +1,15 @@
 {
   "version": "3.6.5",
   "description": "Removes WDA_EXCLUDEFROMCAPTURE screen-capture protection from Windows application windows.",
-  "homepage": "https://github.com/Londopy/capture-bypass",
+  "homepage": "https://github.com/levi52/capture-bypass",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Londopy/capture-bypass/releases/download/v3.6.5/capture-bypass-3.6.5-portable-x64.zip",
+      "url": "https://github.com/levi52/capture-bypass/releases/download/v3.6.5/capture-bypass-3.6.5-portable-x64.zip",
       "hash": "sha256:534c7b5354c3019a2cc3e38f62f22961df604eecd3c150b6a1158a8f9583f95d"
     },
     "arm64": {
-      "url": "https://github.com/Londopy/capture-bypass/releases/download/v3.6.5/capture-bypass-3.6.5-portable-arm64.zip",
+      "url": "https://github.com/levi52/capture-bypass/releases/download/v3.6.5/capture-bypass-3.6.5-portable-arm64.zip",
       "hash": "sha256:186d127adfd3844fef0b7783135422eec32b0a70049e433a8a14628f890ab79a"
     }
   },
@@ -26,15 +26,15 @@
     ]
   ],
   "checkver": {
-    "github": "https://github.com/Londopy/capture-bypass"
+    "github": "https://github.com/levi52/capture-bypass"
   },
   "autoupdate": {
     "architecture": {
       "64bit": {
-        "url": "https://github.com/Londopy/capture-bypass/releases/download/v$version/capture-bypass-$version-portable-x64.zip"
+        "url": "https://github.com/levi52/capture-bypass/releases/download/v$version/capture-bypass-$version-portable-x64.zip"
       },
       "arm64": {
-        "url": "https://github.com/Londopy/capture-bypass/releases/download/v3.6.5/capture-bypass-$version-portable-arm64.zip"
+        "url": "https://github.com/levi52/capture-bypass/releases/download/v$version/capture-bypass-$version-portable-arm64.zip"
       }
     }
   }
