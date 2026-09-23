@@ -3,7 +3,7 @@
 // Set APP_VERSION before cargo build to override the version string without
 // touching Cargo.toml. The CI workflow does this from the git tag:
 //
-//   set APP_VERSION=3.4.12 && cargo build --release -p gui
+//   set APP_VERSION=3.6.5 && cargo build --release -p gui
 //
 // If APP_VERSION isn't set, Cargo.toml's version is used as normal.
 
