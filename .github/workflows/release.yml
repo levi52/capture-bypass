@@ -1,10 +1,19 @@
 name: Release
 
-# Triggers whenever you push a version tag — e.g. git tag v1.2.3 && git push --tags
+# Triggers:
+#   • automatically on a version tag push — git tag v1.2.3 && git push --tags
+#   • manually from the Actions tab ("Run workflow"), either from a v* tag or
+#     from any branch with the `version` input filled in
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 3.6.5 (leave empty when running from a v* tag)'
+        required: false
+        default: ''
 
 # write = create releases + push the updated Scoop manifest back to main
 permissions:
@@ -18,6 +27,25 @@ jobs:
       # ── 1. Source ────────────────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ── 1b. Resolve version ──────────────────────────────────────────────────
+      # A tag push derives the version from the tag name (v3.6.5 → 3.6.5).
+      # A manual run from a branch has no tag, so it needs the `version` input.
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $raw = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.version }}" -ne "") {
+            $raw = "${{ inputs.version }}"
+          }
+          $version = $raw.TrimStart('v')
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Resolved version '$version' is not X.Y.Z — pass the 'version' input when running manually."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version"    >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing version $version (tag v$version)"
 
       # ── 2. Rust toolchain (x64 + x86 + ARM64) ──────────────────────────────
       - name: Install Rust stable
@@ -53,7 +81,7 @@ jobs:
       - name: Build x64
         shell: pwsh
         run: |
-          $env:APP_VERSION = "${{ github.ref_name }}".TrimStart('v')
+          $env:APP_VERSION = "${{ steps.ver.outputs.version }}"
           cargo build --release `
             -p payload_dll `
             -p payload_dll_persistent `
@@ -73,7 +101,7 @@ jobs:
       - name: Build ARM64
         shell: pwsh
         run: |
-          $env:APP_VERSION = "${{ github.ref_name }}".TrimStart('v')
+          $env:APP_VERSION = "${{ steps.ver.outputs.version }}"
           cargo build --release --target aarch64-pc-windows-msvc `
             -p payload_dll `
             -p payload_dll_persistent `
@@ -88,7 +116,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $version = "${{ steps.ver.outputs.version }}"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             /DMyAppVersion=$version `
             installer\capture-bypass.iss
@@ -97,7 +125,7 @@ jobs:
       - name: Package portable zip
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $version = "${{ steps.ver.outputs.version }}"
 
           # ── x64 ───────────────────────────────────────────────────────────────
           $stage = "dist\portable"
@@ -134,7 +162,7 @@ jobs:
       - name: Generate release artifacts
         shell: pwsh
         run: |
-          $version   = "${{ github.ref_name }}".TrimStart('v')
+          $version   = "${{ steps.ver.outputs.version }}"
           $installer = "capture-bypass-setup-$version-x64.exe"
           $portable  = "capture-bypass-$version-portable-x64.zip"
           $portArm64 = "capture-bypass-$version-portable-arm64.zip"
@@ -237,7 +265,7 @@ jobs:
           git add bucket\capture-bypass.json
           $changed = git diff --staged --name-only
           if ($changed) {
-            git commit -m "chore: update Scoop manifest to ${{ github.ref_name }}"
+            git commit -m "chore: update Scoop manifest to ${{ steps.ver.outputs.tag }}"
             git push origin update-scoop:main
           }
 
@@ -247,6 +275,9 @@ jobs:
         with:
           generate_release_notes: true
           body_path: dist/release-body.txt
+          # Explicit tag: a manual run from a branch has no tag ref, and Scoop
+          # downloads from /releases/download/v<version>/… which needs one.
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: |
             dist/capture-bypass-setup-*-x64.exe
             dist/capture-bypass-*-portable-x64.zip
